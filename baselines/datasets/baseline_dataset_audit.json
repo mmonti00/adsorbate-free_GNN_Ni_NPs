@@ -1,0 +1,95 @@
+{
+  "seed": 32,
+  "protocol": {
+    "anchors": "DFT-relaxed adsorbate frames, hybrid 2.20/2.30 A O and 2.00/2.20 A H definitions",
+    "descriptors": "MACE-relaxed bare Ni structures only",
+    "gcn_cutoff_A": 3.0,
+    "periodic_handling": "ASE periodic neighbor images and minimum-image site-centroid distance",
+    "train_definition": "exact M6 nanoparticle and slab training split; trained from scratch with no M5 merge",
+    "validation_definition": "original M6 NP/slab validation observations"
+  },
+  "repository_files": {
+    "baseline_dataset": "baseline_dataset.csv",
+    "m6_predictions": "M6_energy_model_predictions.csv",
+    "bare_geometries": "../../ML_relaxed_bare_geom/MACE"
+  },
+  "raw_source_counts": {
+    "M6_train_NP": 1490,
+    "M6_train_SLAB": 169,
+    "M6_val_NP": 375,
+    "M6_val_SLAB": 47
+  },
+  "n_train_raw": 1659,
+  "n_train_unique_configurations": 1659,
+  "n_unique_train_inputs": 1657,
+  "n_duplicate_identity_groups": 0,
+  "max_duplicate_energy_spread_eV": 0.0,
+  "n_validation": 422,
+  "n_validation_inputs_seen_in_training": 1,
+  "n_unique_validation_inputs_seen_in_training": 1,
+  "train_by_domain": {
+    "NP": 1490,
+    "SLAB": 169
+  },
+  "validation_by_domain": {
+    "NP": 375,
+    "SLAB": 47
+  },
+  "train_by_system": {
+    "Ni25_conf1": 641,
+    "Ni30_conf1": 600,
+    "Ni35_conf1": 51,
+    "Ni40_conf1": 36,
+    "Ni45_conf1": 65,
+    "Ni47_conf1": 30,
+    "Ni47_conf2": 25,
+    "Ni50_conf1": 42,
+    "Ni100_conf1": 52,
+    "Ni100_conf2": 46,
+    "Ni111_conf1": 49,
+    "Ni111_conf2": 22
+  },
+  "validation_by_system": {
+    "Ni35_conf1": 14,
+    "Ni25_conf1": 161,
+    "Ni30_conf1": 150,
+    "Ni40_conf1": 11,
+    "Ni45_conf1": 16,
+    "Ni47_conf2": 7,
+    "Ni47_conf1": 7,
+    "Ni50_conf1": 9,
+    "Ni100_conf1": 15,
+    "Ni111_conf1": 14,
+    "Ni111_conf2": 5,
+    "Ni100_conf2": 13
+  },
+  "train_by_motif": {
+    "BB": 149,
+    "HH": 520,
+    "HB": 158,
+    "BH": 418,
+    "HT": 6,
+    "TH": 282,
+    "TB": 40,
+    "BT": 4,
+    "BF": 27,
+    "HF": 1,
+    "FB": 11,
+    "FF": 40,
+    "TF": 3
+  },
+  "validation_by_motif": {
+    "TH": 72,
+    "HB": 41,
+    "BH": 105,
+    "HH": 129,
+    "BB": 38,
+    "TB": 10,
+    "HT": 3,
+    "FB": 4,
+    "BF": 7,
+    "FF": 10,
+    "TF": 2,
+    "BT": 1
+  }
+}

@@ -1,0 +1,21 @@
+# Core scientific stack
+numpy
+pandas
+scipy
+matplotlib
+ase
+
+# Descriptor baselines
+scikit-learn
+xgboost
+joblib
+
+# GNN training and inference
+torch
+torch-geometric
+
+# Bare-structure geometry optimization
+mace-torch
+
+# Notebook execution
+jupyterlab

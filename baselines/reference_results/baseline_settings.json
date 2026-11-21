@@ -1,0 +1,29 @@
+{
+  "seed": 32,
+  "n_train": 1659,
+  "n_validation": 422,
+  "n_validation_clean_inputs": 421,
+  "surface_sample_weight": 4.0,
+  "ridge_best": {
+    "alpha": 1.0,
+    "MAE_eV": 0.11434935650670008,
+    "RMSE_eV": 0.14632439244029602,
+    "R2": 0.6479954636659864
+  },
+  "nonlinear_backend": "XGBoost",
+  "nonlinear_best": {
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "reg_lambda": 1.0,
+    "MAE_eV": 0.07327887776162528,
+    "RMSE_eV": 0.09953693191465286,
+    "R2": 0.8371141713955403
+  },
+  "xgboost_available": true,
+  "external_tests_included": false,
+  "portable_inference_artifacts": {
+    "ridge_portable": "ridge_baseline_portable.json",
+    "nonlinear_preprocessing": "nonlinear_baseline_preprocessing.json",
+    "nonlinear_native_model": "xgboost_baseline_native.json"
+  }
+}

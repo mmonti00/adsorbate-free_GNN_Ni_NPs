@@ -1,0 +1,49 @@
+&CONTROL
+     calculation = 'relax'
+!     restart_mode = 'restart'
+     prefix = 'Ni55'
+     outdir = './tmp'
+     pseudo_dir = './PPs/'
+     verbosity = 'low'
+     wf_collect = .true.
+     tprnfor=.TRUE.
+     forc_conv_thr=0.00050
+     nstep = 300
+/
+&SYSTEM
+    ibrav = 0,
+    nat = 58,
+    ntyp = 3,
+    nbnd = 604,
+    ecutwfc = 45,
+    ecutrho = 360.0,
+    input_dft = 'PBE',
+    tot_charge = 0.0,
+    nspin = 2,
+    starting_magnetization(1) = 0.6,
+    occupations='smearing',
+    smearing='m-v',
+    degauss=0.01
+/
+
+&ELECTRONS
+    conv_thr = 1.0d-6,
+    mixing_beta = 0.1
+    electron_maxstep=500
+/
+&IONS
+    ion_positions = 'default'
+    ion_dynamics = 'bfgs'
+/
+ATOMIC_SPECIES
+Ni   58.69 ni_pbe_v1.4.uspp.F.UPF
+O    15.999 O.upf
+H     1.008 H.upf
+
+K_POINTS (gamma)
+
+CELL_PARAMETERS (angstrom)
+  22.00000000000    0.0000000000    0.000000000
+   0.00000000000   22.0000000000    0.000000000
+   0.00000000000    0.0000000000   22.000000000
+ATOMIC_POSITIONS (angstrom)

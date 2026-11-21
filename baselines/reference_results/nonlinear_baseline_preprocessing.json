@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "model_type": "XGBoost",
+  "motifs": [
+    "BB",
+    "BF",
+    "BH",
+    "BT",
+    "FB",
+    "FF",
+    "HB",
+    "HF",
+    "HH",
+    "HT",
+    "TB",
+    "TF",
+    "TH"
+  ],
+  "continuous_features": [
+    "GCN_O",
+    "GCN_H",
+    "d_OH_A"
+  ],
+  "feature_names": [
+    "GCN_O",
+    "GCN_H",
+    "d_OH_A",
+    "motif_BB",
+    "motif_BF",
+    "motif_BH",
+    "motif_BT",
+    "motif_FB",
+    "motif_FF",
+    "motif_HB",
+    "motif_HF",
+    "motif_HH",
+    "motif_HT",
+    "motif_TB",
+    "motif_TF",
+    "motif_TH"
+  ],
+  "training_descriptor_ranges": {
+    "GCN_O": {
+      "min": 2.4444444444444446,
+      "max": 11.863636363636363
+    },
+    "GCN_H": {
+      "min": 2.4444444444444446,
+      "max": 11.863636363636363
+    },
+    "d_OH_A": {
+      "min": 1.2500849443606452,
+      "max": 6.035680102739538
+    }
+  }
+}
