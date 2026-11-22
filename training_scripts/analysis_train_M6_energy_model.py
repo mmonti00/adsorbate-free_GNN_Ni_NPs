@@ -23,7 +23,6 @@ Outputs are written to ``check_train_M6_energy_model/``.
 import importlib
 import os
 import re
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -49,15 +48,6 @@ ABSOLUTE_GRID_FILE = "parity_validation_by_config_absolute.pdf"
 RELATIVE_GRID_FILE = "parity_validation_by_config_relative.pdf"
 ERROR_TABLE_FILE = "model_errors.csv"
 
-# Rebuild the exact paper/checkpoint sample universe.  This is required because
-# the released split contains one documented legacy frame that the default
-# new-split adsorption-state filter correctly rejects.
-PAPER_SPLIT_MANIFEST = (
-    Path(__file__).resolve().parent
-    / "paper_splits"
-    / "M6_energy_model_paper_split.json"
-)
-
 plt.rcParams.update({
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
@@ -70,12 +60,7 @@ plt.rcParams.update({
 
 tr = importlib.import_module(TRAIN_MODULE)
 
-if not PAPER_SPLIT_MANIFEST.is_file():
-    raise FileNotFoundError(PAPER_SPLIT_MANIFEST)
-tr.FIXED_SPLIT_JSON = str(PAPER_SPLIT_MANIFEST)
-
 print(f"Training module: {TRAIN_MODULE} ({getattr(tr, '__file__', '?')})")
-print(f"Checkpoint split compatibility: {PAPER_SPLIT_MANIFEST}")
 
 BareSiteGCNN = tr.BareSiteGCNN
 DEVICE = tr.DEVICE
@@ -495,7 +480,7 @@ def plot_validation_group_grid(plot_df, true_col, pred_col, xlabel, ylabel, outf
         ax.set_axis_off()
 
     metrics_rows = []
-    for ax, (domain, group) in zip(axes.flat, pairs):
+    for panel_idx, (ax, (domain, group)) in enumerate(zip(axes.flat, pairs)):
         sub = plot_df[(plot_df["domain"] == domain) & (plot_df["group"] == group)]
         x = sub[true_col].to_numpy(float)
         y = sub[pred_col].to_numpy(float)
@@ -528,13 +513,26 @@ def plot_validation_group_grid(plot_df, true_col, pred_col, xlabel, ylabel, outf
         ax.xaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
 
-        ax.set_title(format_config_label(label), fontsize=20)
-        ax.set_xlabel(xlabel, fontsize=17)
-        ax.set_ylabel(ylabel, fontsize=17)
+        ax.set_title(format_config_label(label), fontsize=24)
+        ax.set_xlabel(xlabel, fontsize=22)
+        # The y label is shared along each row, so draw it on the first column only.
+        if panel_idx % ncols == 0:
+            ax.set_ylabel(ylabel, fontsize=22)
+        # Panel letter at the top-left corner of the panel's grid cell, as in
+        # the manuscript figures (matplotlib cannot select the bold face of the
+        # macOS Helvetica collection, so Arial Bold is used).
+        fig_w, fig_h = fig.get_size_inches()
+        row, col = divmod(panel_idx, ncols)
+        fig.text(
+            col / ncols + 0.02 / fig_w, 1.0 - row / nrows - 0.22 / fig_h,
+            f"{chr(ord('a') + panel_idx)})",
+            fontsize=25, fontweight="bold",
+            fontfamily=["Arial", "DejaVu Sans"], ha="left", va="top",
+        )
         ax.minorticks_on()
         ax.xaxis.set_minor_locator(AutoMinorLocator(2))
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
-        ax.tick_params(which="major", length=8, labelsize=16)
+        ax.tick_params(which="major", length=8, labelsize=18)
         ax.tick_params(which="minor", length=4)
         ax.grid(True, alpha=0.3)
 
@@ -553,7 +551,7 @@ def plot_validation_group_grid(plot_df, true_col, pred_col, xlabel, ylabel, outf
     fig.align_ylabels(list(axes.flat))
 
     # Fixed margins give the absolute and relative grids identical geometry.
-    fig.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.06, wspace=0.35, hspace=0.45)
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.94, bottom=0.07, wspace=0.38, hspace=0.42)
     fig.savefig(os.path.join(OUTDIR, outfile))
     plt.close(fig)
 

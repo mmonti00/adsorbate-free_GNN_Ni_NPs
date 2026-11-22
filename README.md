@@ -127,15 +127,14 @@ This trains the nanoparticle-only M5 model from scratch.
 
 ### M6 energy model
 
-For a new seeded split, leave `FIXED_SPLIT_JSON = None`. To reproduce the exact
-train/validation membership used in the paper, set the following near the top
-of `train_M6_energy_model.py`:
+To reproduce the paper, use the provided split. This is the default setting
+near the top of `train_M6_energy_model.py`:
 
 ```python
 FIXED_SPLIT_JSON = "paper_splits/M6_energy_model_paper_split.json"
 ```
 
-Then run:
+For a new seeded split, set `FIXED_SPLIT_JSON = None`. Then run:
 
 ```bash
 python train_M6_energy_model.py
@@ -148,9 +147,8 @@ also supports training the same architecture from scratch by changing
 
 ### Retention model
 
-To reproduce the exact membership associated with the released retention
-checkpoint, set these values near the top of
-`train_retention_classifier.py`:
+To reproduce the paper, use the provided split. This is the default setting
+near the top of `train_retention_classifier.py`:
 
 ```python
 FIXED_SPLIT_FILE = "paper_splits/retention_checkpoint_split.json"
@@ -204,7 +202,11 @@ These geometric settings are deliberately not inferred automatically. For the
 surface calculations in the paper, the accepted O/H-site separation window was
 selected for the specific system (approximately 1.4–5.5 Å); use the values
 appropriate to the geometry being reproduced. The domain used by the GNN is
-determined from the structure's PBC flags.
+determined from the structure's PBC flags. For periodic surfaces, an O/H site
+pair whose separation lies exactly at half a lattice vector has two equally
+close periodic images; when these give different local graphs, the bare anchor
+indices do not define a unique candidate, and the pair is skipped by default
+(`SKIP_PBC_AMBIGUOUS = True`).
 
 From the repository root, run:
 
@@ -254,19 +256,17 @@ for larger Ni nanoclusters. The notebook
 generalized-coordination-number analyses based on the ranked candidates. Its
 introductory cell lists the output associated with each section.
 
-### Training-environment coverage
-
-The local-environment and learned-representation OOD analysis can be reproduced
-with:
+The surface-coordination and bond-orientational-order descriptors of the bare
+structures (surface atomic GCN and $\bar{q}_6$ distributions, Figure S13) are
+computed with:
 
 ```bash
-python test_systems/environment_ood_analysis/analyze_test_training_environment_ood.py
+python test_systems/analyze_bare_Ni_for_paper.py
 ```
 
-It uses the released M6 checkpoint, its exact train/validation structures, the
-five external test systems, and the corresponding bare Ni geometries. Details
-and definitions are provided in
-`test_systems/environment_ood_analysis/README.md`.
+Outputs are written to `test_systems/bare_Ni_structural_analysis/`; the
+combined figure for all systems is
+`surface_environment_SI_figure_all_systems.pdf`.
 
 ### Ni-contact cutoff sensitivity
 
@@ -284,13 +284,17 @@ the protocol and reference results.
 
 ## Descriptor-based baselines
 
-The baseline directory is self-contained. It contains the exact M6 training
-and validation split represented as structural descriptors, the saved M6
-predictions, and the Ridge/XGBoost reference models and results.
+The baseline directory contains the exact M6 training and validation split
+represented as structural descriptors, the saved M6 predictions, and the
+Ridge/XGBoost reference models and results. Training uses only files in this
+directory; the descriptor builder and the figure script also read the released
+structures, bare geometries, and external test systems elsewhere in the
+repository.
 
 ```bash
 cd baselines
 python train_descriptor_baselines.py
+python make_baseline_figures.py
 ```
 
 New outputs are written to `baselines/reproduced_results/`; the results used in
@@ -305,8 +309,8 @@ reference metrics.
   Ni–H. Fourfold assignments use extended cutoffs of 2.30 and 2.20 Å,
   respectively, together with the hybrid contact-count rule implemented in the
   code.
-- The external optimized-structure analyses use a 1.90 Å short Ni–H convention; 
-  the rationale is documented in the test-analysis scripts and the environment-OOD README.
+- The external optimized-structure analyses use a 1.90 Å short Ni–H convention;
+  the rationale is documented in the test-analysis scripts.
 - Periodic distances are evaluated with minimum-image conventions, and slab
   GNNs include the required periodic images in the local graph.
 - Configuration indices in the fixed-split manifests refer to the order of

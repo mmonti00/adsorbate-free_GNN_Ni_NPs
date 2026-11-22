@@ -7,11 +7,11 @@ in ``INITIAL_NI_FILES``. Nanoparticle graphs are finite, while slab graphs use
 explicit periodic images generated from the lattice and PBC stored in the bare
 extxyz files.
 
-By default, the script filters the target adsorption state and creates a new
-seeded stratified train/validation split. To reproduce the data split used in
-the paper, set ``FIXED_SPLIT_JSON`` to the supplied manifest in
-``paper_splits/``. A fixed manifest takes precedence over the filtering step so
-that its stored membership is reproduced exactly.
+To reproduce the paper, use the split supplied in ``paper_splits/``; this is
+the default ``FIXED_SPLIT_JSON`` setting. The fixed manifest takes precedence
+over the adsorption-state filter so that its stored membership is reproduced
+exactly. Setting ``FIXED_SPLIT_JSON = None`` instead filters the target
+adsorption state and creates a new seeded stratified train/validation split.
 
 Seeds are set for Python, NumPy, PyTorch, and data-loader shuffling. Exact
 bitwise reproducibility is nevertheless not guaranteed for every CUDA/PyG
@@ -48,10 +48,9 @@ from torch_geometric.nn import global_mean_pool, global_add_pool, MessagePassing
 NP_EXTXYZ_FILE = "../datasets/dataset_NPs_M6_energy_model.extxyz"
 SLAB_EXTXYZ_FILE = "../datasets/dataset_SLABs_M6_energy_model.extxyz"
 
-# Set to None for a new seeded stratified split. To use the exact split reported
-# in the paper, set:
-#FIXED_SPLIT_JSON = "paper_splits/M6_energy_model_paper_split.json"
-FIXED_SPLIT_JSON = None
+# To reproduce the paper, use the supplied split. Set to None for a new seeded
+# stratified split.
+FIXED_SPLIT_JSON = "paper_splits/M6_energy_model_paper_split.json"
 
 # Generated split files.
 TRAIN_EXTXYZ_OUT = "M6_energy_model_all_train_data.extxyz"
@@ -118,11 +117,6 @@ H_FOLDED_N_TOTAL = 4
 
 # The H atom bonded to O is assigned as the hydroxyl H; the other is H*.
 OH_BOND_CUTOFF = 1.20
-
-# The released paper split contains one legacy NP frame that is chemically
-# O*+H*+H* rather than OH*+H*.  It is retained only when reproducing that fixed
-# split/checkpoint.  New splits reject it through the adsorption-state filter.
-LEGACY_FIXED_SPLIT_CLOSEST_H_CONFIGS = {"Ni45_conf1_0078"}
 
 # F sites retain four anchors; standard sites retain at most three.
 MAX_STANDARD_O_ANCHORS = 3
@@ -302,13 +296,7 @@ def get_symbols_positions(atoms) -> Tuple[List[str], np.ndarray]:
 def count_ni_atoms(symbols: List[str]) -> int:
     return sum(1 for s in symbols if s == "Ni")
 
-def find_adsorbate_indices(
-    symbols: List[str],
-    positions: np.ndarray,
-    cell,
-    pbc,
-    config_label: str = "",
-) -> Tuple[int, int, int]:
+def find_adsorbate_indices(symbols: List[str], positions: np.ndarray, cell, pbc) -> Tuple[int, int, int]:
     """Return the O, hydroxyl-H, and independently adsorbed-H indices.
 
     Distances use the minimum-image convention for periodic frames. Each frame
@@ -340,18 +328,14 @@ def find_adsorbate_indices(
 
     distances = [distance_pbc(positions[h_idx], o_pos, cell, pbc) for h_idx in h_indices]
 
-    # Preserve the historical closest-H convention only for the one known
-    # malformed frame in the released paper split.  Do not silently accept any
-    # other invalid adsorption state merely because a fixed split is active.
-    if (
-        FIXED_SPLIT_JSON is not None
-        and config_label in LEGACY_FIXED_SPLIT_CLOSEST_H_CONFIGS
-    ):
+    # A fixed manifest reproduces the preprocessing used to create that split.
+    # If an explicitly listed frame has no unique O-H assignment, retain the
+    # historical convention: the H closest to O is OH and the other is H*.
+    if FIXED_SPLIT_JSON is not None:
         ordered = sorted(zip(h_indices, distances), key=lambda item: item[1])
         print(
-            "  Legacy fixed-split compatibility assignment for "
-            f"{config_label}: no unique O-H bond for distances={distances}; "
-            "assigning the closest H as hydroxyl H."
+            "  Fixed-split compatibility assignment: no unique O-H bond for "
+            f"distances={distances}; assigning closest H as hydroxyl H."
         )
         return o_idx, ordered[0][0], ordered[1][0]
 
@@ -376,13 +360,7 @@ def filter_target_adsorption_state(frames, domain_label: str):
     for input_idx, atoms in enumerate(frames):
         symbols, positions = get_symbols_positions(atoms)
         try:
-            find_adsorbate_indices(
-                symbols,
-                positions,
-                atoms.cell,
-                atoms.pbc,
-                config_label=str(atoms.info.get("config_label", "")),
-            )
+            find_adsorbate_indices(symbols, positions, atoms.cell, atoms.pbc)
         except ValueError as exc:
             rejected.append(
                 (input_idx, str(atoms.info.get("config_label", "")), str(exc))
@@ -664,13 +642,7 @@ def resolve_anchor_shifts(
     cell,
     pbc,
 ) -> Tuple[Dict[int, Tuple[int, int, int]], Dict[int, Tuple[int, int, int]]]:
-    """Resolve consistent periodic images for the O and H* anchor groups.
-
-    The groups are unwrapped independently, then the entire H* group is moved
-    rigidly to its nearest periodic placement relative to the O group. Separate
-    shift maps are retained because the same base Ni atom may legitimately use
-    different periodic images for the two adsorption sites.
-    """
+    """Legacy anchor-only image resolution used for bare-site inference."""
     cell_arr = np.asarray(cell)
     inv_cell = np.linalg.inv(cell_arr)
 
@@ -700,6 +672,86 @@ def resolve_anchor_shifts(
     return o_shifts, h_shifts
 
 
+def _closest_image_shift(base_pos, target, cell_arr, inv_cell, pbc_arr):
+    """Return the integer shift placing ``base_pos`` closest to ``target``.
+
+    Also returns the closest distance and the distance margin to the second-
+    closest image. A small margin flags a genuinely ambiguous assignment.
+    """
+    frac = (target - base_pos) @ inv_cell
+    s0 = np.where(pbc_arr, np.round(frac), 0.0).astype(int)
+    offsets = [range(-1, 2) if periodic else range(1) for periodic in pbc_arr]
+    candidates = []
+    for dx in offsets[0]:
+        for dy in offsets[1]:
+            for dz in offsets[2]:
+                shift = s0 + np.array([dx, dy, dz])
+                distance = float(
+                    np.linalg.norm(base_pos + shift @ cell_arr - target)
+                )
+                candidates.append((distance, tuple(int(v) for v in shift)))
+    candidates.sort(key=lambda item: item[0])
+    margin = (
+        candidates[1][0] - candidates[0][0]
+        if len(candidates) > 1
+        else np.inf
+    )
+    return candidates[0][1], candidates[0][0], margin
+
+
+def resolve_anchor_shifts_from_adsorbates(
+    o_anchor_idx: List[int],
+    h_anchor_idx: List[int],
+    positions_ads: np.ndarray,
+    o_idx: int,
+    h_ads_idx: int,
+    positions_bare: np.ndarray,
+    cell,
+    pbc,
+    max_anchor_distance: float = 3.0,
+    min_margin: float = 0.3,
+) -> Tuple[Dict[int, Tuple[int, int, int]], Dict[int, Tuple[int, int, int]]]:
+    """Resolve bare-Ni anchor images from the actual O and H* positions.
+
+    O anchors use the bare periodic images closest to O. H* is first placed in
+    its minimum-image position relative to O, and H anchors use the images
+    closest to that target. This remains well defined when two Ni anchors are
+    exactly half a lattice vector apart.
+    """
+    cell_arr = np.asarray(cell)
+    inv_cell = np.linalg.inv(cell_arr)
+    pbc_arr = np.asarray(pbc, dtype=bool)
+
+    o_target = positions_ads[o_idx]
+    h_target = o_target + mic_vectors(
+        (positions_ads[h_ads_idx] - o_target)[None, :], cell, pbc
+    )[0]
+
+    def _resolve(indices, target, label):
+        shifts = {}
+        for base_idx in indices:
+            shift, distance, margin = _closest_image_shift(
+                positions_bare[base_idx], target, cell_arr, inv_cell, pbc_arr
+            )
+            if distance > max_anchor_distance:
+                raise ValueError(
+                    f"{label} anchor {base_idx}: closest bare image is "
+                    f"{distance:.2f} A from the adsorbate; Ni ordering or bare "
+                    "reference probably mismatched."
+                )
+            if margin < min_margin:
+                print(
+                    f"  Warning: ambiguous {label} anchor image for Ni "
+                    f"{base_idx} (d={distance:.2f} A, margin={margin:.2f} A)."
+                )
+            shifts[base_idx] = shift
+        return shifts
+
+    return _resolve(o_anchor_idx, o_target, "O"), _resolve(
+        h_anchor_idx, h_target, "H*"
+    )
+
+
 def build_slab_local_graph(
     ni_indices: List[int],
     positions_bare: np.ndarray,
@@ -710,6 +762,8 @@ def build_slab_local_graph(
     pbc,
     local_cutoff: float,
     edge_cutoff: float,
+    o_shifts: Optional[Dict[int, Tuple[int, int, int]]] = None,
+    h_shifts: Optional[Dict[int, Tuple[int, int, int]]] = None,
 ) -> Tuple[List[Tuple[int, Tuple[int, int, int], np.ndarray]], np.ndarray, np.ndarray, List[int]]:
     """Build an explicit periodic-image graph for one slab adsorption site.
 
@@ -717,9 +771,10 @@ def build_slab_local_graph(
     image positions, and base Ni indices. Base indices can repeat when several
     periodic copies fall inside the local crop.
     """
-    o_shifts, h_shifts = resolve_anchor_shifts(
-        o_anchor_idx, h_anchor_idx, anchor_positions, cell, pbc
-    )
+    if o_shifts is None or h_shifts is None:
+        o_shifts, h_shifts = resolve_anchor_shifts(
+            o_anchor_idx, h_anchor_idx, anchor_positions, cell, pbc
+        )
 
     cell_arr = np.asarray(cell)
 
@@ -739,15 +794,35 @@ def build_slab_local_graph(
     anchor_cart = np.array([_cart_of(b, s) for b, s in any_anchor_images])
 
     pbc_arr = np.asarray(pbc, dtype=bool)
-    reps = [0, 0, 0]
+    inv_cell = np.linalg.inv(cell_arr)
+    pads = []
     for d in range(3):
         if pbc_arr[d]:
-            reps[d] = int(np.ceil(local_cutoff / np.linalg.norm(cell_arr[d]))) + 1
-    ranges = [range(-r, r + 1) if r else range(1) for r in reps]
+            pads.append(
+                int(np.ceil(local_cutoff / np.linalg.norm(cell_arr[d]))) + 1
+            )
+        else:
+            pads.append(0)
 
     images: List[Tuple[int, Tuple[int, int, int], np.ndarray]] = []
     for b in ni_indices:
         base_pos = positions_bare[b]
+        # Center this atom's image search on the images closest to the resolved
+        # anchors. This is invariant when individual input atoms are wrapped by
+        # different lattice vectors; a single global shift range is not.
+        centers = []
+        for target in anchor_cart:
+            frac = (target - base_pos) @ inv_cell
+            centers.append(np.where(pbc_arr, np.round(frac), 0.0).astype(int))
+        centers = np.asarray(centers, dtype=int)
+        ranges = []
+        for d in range(3):
+            if pbc_arr[d]:
+                lo = int(centers[:, d].min()) - pads[d]
+                hi = int(centers[:, d].max()) + pads[d]
+                ranges.append(range(lo, hi + 1))
+            else:
+                ranges.append(range(1))
         for sx in ranges[0]:
             for sy in ranges[1]:
                 for sz in ranges[2]:
@@ -872,18 +947,18 @@ def process_frame(
     symbols, positions = get_symbols_positions(atoms)
     n_ni = count_ni_atoms(symbols)
     e_ads = get_target_energy(atoms)
-    config_label = str(atoms.info.get("config_label", ""))
 
     cell_ads = atoms.cell
     pbc_ads = atoms.pbc
 
     ni_indices = [i for i, s in enumerate(symbols) if s == "Ni"]
+    if ni_indices != list(range(n_ni)):
+        raise ValueError(
+            f"Frame {frame_idx}: Ni atoms are not the leading block of the frame; "
+            "anchor indices would not map onto the bare reference."
+        )
     o_idx, _h_oh_idx, h_ads_idx = find_adsorbate_indices(
-        symbols,
-        positions,
-        cell_ads,
-        pbc_ads,
-        config_label=config_label,
+        symbols, positions, cell_ads, pbc_ads
     )
 
     o_anchor_idx, o_site, o_anchor_meta = extract_o_anchor_indices_hybrid(
@@ -967,9 +1042,21 @@ def process_frame(
     if domain_label == "SLAB":
         # Expand periodic images around the site using only the bare geometry.
         # The relaxed adsorbate frame supplies the anchor indices and target.
+        o_shifts, h_shifts = resolve_anchor_shifts_from_adsorbates(
+            o_anchor_idx,
+            h_anchor_idx,
+            positions,
+            o_idx,
+            h_ads_idx,
+            positions_initial,
+            cell_initial,
+            pbc_initial,
+        )
         images, x, local_positions, keep_ni = build_slab_local_graph(
             initial_ni_indices, positions_initial, o_anchor_idx, h_anchor_idx,
             positions_initial, cell_initial, pbc_initial, local_cutoff, edge_cutoff,
+            o_shifts=o_shifts,
+            h_shifts=h_shifts,
         )
         edge_index, edge_attr = build_edges_and_edge_attr(
             local_positions, cell_initial, [False, False, False], edge_cutoff,
@@ -1014,10 +1101,7 @@ def process_frame(
         "frame_idx": int(frame_idx),
         "domain": domain_label,
         "group_label": group_label,
-        "config_label": config_label,
-        "legacy_closest_h_compatibility": (
-            config_label in LEGACY_FIXED_SPLIT_CLOSEST_H_CONFIGS
-        ),
+        "config_label": str(atoms.info.get("config_label", "")),
         "n_ni": int(n_ni),
         "energy": float(e_ads),
         "motif": motif,
@@ -1717,9 +1801,6 @@ def main():
                     "H_FOLDED_N_SHORT": H_FOLDED_N_SHORT,
                     "H_FOLDED_N_TOTAL": H_FOLDED_N_TOTAL,
                     "OH_BOND_CUTOFF": OH_BOND_CUTOFF,
-                    "LEGACY_FIXED_SPLIT_CLOSEST_H_CONFIGS": sorted(
-                        LEGACY_FIXED_SPLIT_CLOSEST_H_CONFIGS
-                    ),
                     "MAX_STANDARD_H_ANCHORS": MAX_STANDARD_H_ANCHORS,
                     "H_ANCHOR_DEFINITION": "hybrid_2p00_standard_at_least_2short_four_total_F",
                     "SITE_TYPES": list(SITE_TYPES),

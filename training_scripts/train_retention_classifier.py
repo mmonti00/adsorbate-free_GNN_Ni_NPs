@@ -98,12 +98,12 @@ TRAINING_SEED = 10
 # SPLIT_SEED controls generation of a new grouped split.
 SPLIT_SEED = 32
 
-# For ablation or random-seed comparisons, set USE_FIXED_SPLIT=True so every run
-# uses the same frame identities. If FIXED_SPLIT_FILE does not exist, the script
-# creates it from SPLIT_SEED; subsequent runs load it.
-# The checkpoint we provide was trained with a fixed split to compare its performance relative to the DFT-geometry case.
+# To reproduce the paper, use the supplied split (USE_FIXED_SPLIT = True), so
+# every run uses the same frame identities. If FIXED_SPLIT_FILE does not exist,
+# the script creates it from SPLIT_SEED; subsequent runs load it. Set
+# USE_FIXED_SPLIT = False for a new grouped split.
 FIXED_SPLIT_FILE = "paper_splits/retention_checkpoint_split.json"
-USE_FIXED_SPLIT = False
+USE_FIXED_SPLIT = True
 
 # Every run also saves a record of its active split here.
 SPLIT_OUT = "split_used_this_run.json"
@@ -613,13 +613,7 @@ def resolve_anchor_shifts(
     cell,
     pbc,
 ) -> Tuple[Dict[int, Tuple[int, int, int]], Dict[int, Tuple[int, int, int]]]:
-    """Resolve O- and H-anchor images while preserving each site's geometry.
-
-    The two anchor groups are unwrapped independently and the H group is then
-    translated as a unit to its nearest periodic position relative to the O
-    group. Separate shift maps preserve both roles of a Ni atom shared by the
-    O and H sites.
-    """
+    """Legacy anchor-only image resolution used for bare-site inference."""
     cell_arr = np.asarray(cell)
     inv_cell = np.linalg.inv(cell_arr)
 
@@ -645,6 +639,80 @@ def resolve_anchor_shifts(
     return o_shifts, h_shifts
 
 
+def _closest_image_shift(base_pos, target, cell_arr, inv_cell, pbc_arr):
+    """Return the integer shift placing ``base_pos`` closest to ``target``.
+
+    Also returns the closest distance and the distance margin to the second-
+    closest image. A small margin flags a genuinely ambiguous assignment.
+    """
+    frac = (target - base_pos) @ inv_cell
+    s0 = np.where(pbc_arr, np.round(frac), 0.0).astype(int)
+    offsets = [range(-1, 2) if periodic else range(1) for periodic in pbc_arr]
+    candidates = []
+    for dx in offsets[0]:
+        for dy in offsets[1]:
+            for dz in offsets[2]:
+                shift = s0 + np.array([dx, dy, dz])
+                distance = float(
+                    np.linalg.norm(base_pos + shift @ cell_arr - target)
+                )
+                candidates.append((distance, tuple(int(v) for v in shift)))
+    candidates.sort(key=lambda item: item[0])
+    margin = (
+        candidates[1][0] - candidates[0][0]
+        if len(candidates) > 1
+        else np.inf
+    )
+    return candidates[0][1], candidates[0][0], margin
+
+
+def resolve_anchor_shifts_from_adsorbates(
+    o_anchor_idx: List[int],
+    h_anchor_idx: List[int],
+    positions_ads: np.ndarray,
+    o_idx: int,
+    h_ads_idx: int,
+    positions_graph: np.ndarray,
+    cell,
+    pbc,
+    max_anchor_distance: float = 3.0,
+    min_margin: float = 0.3,
+) -> Tuple[Dict[int, Tuple[int, int, int]], Dict[int, Tuple[int, int, int]]]:
+    """Resolve graph-frame anchor images from the initial O and H* positions."""
+    cell_arr = np.asarray(cell)
+    inv_cell = np.linalg.inv(cell_arr)
+    pbc_arr = np.asarray(pbc, dtype=bool)
+
+    o_target = positions_ads[o_idx]
+    h_target = o_target + mic_vectors(
+        (positions_ads[h_ads_idx] - o_target)[None, :], cell, pbc
+    )[0]
+
+    def _resolve(indices, target, label):
+        shifts = {}
+        for base_idx in indices:
+            shift, distance, margin = _closest_image_shift(
+                positions_graph[base_idx], target, cell_arr, inv_cell, pbc_arr
+            )
+            if distance > max_anchor_distance:
+                raise ValueError(
+                    f"{label} anchor {base_idx}: closest graph image is "
+                    f"{distance:.2f} A from the adsorbate; atom ordering is "
+                    "probably mismatched."
+                )
+            if margin < min_margin:
+                print(
+                    f"  Warning: ambiguous {label} anchor image for Ni "
+                    f"{base_idx} (d={distance:.2f} A, margin={margin:.2f} A)."
+                )
+            shifts[base_idx] = shift
+        return shifts
+
+    return _resolve(o_anchor_idx, o_target, "O"), _resolve(
+        h_anchor_idx, h_target, "H*"
+    )
+
+
 def build_slab_local_graph(
     ni_indices: List[int],
     positions_bare: np.ndarray,
@@ -655,6 +723,8 @@ def build_slab_local_graph(
     pbc,
     local_cutoff: float,
     edge_cutoff: float,
+    o_shifts: Optional[Dict[int, Tuple[int, int, int]]] = None,
+    h_shifts: Optional[Dict[int, Tuple[int, int, int]]] = None,
 ) -> Tuple[
     List[Tuple[int, Tuple[int, int, int], np.ndarray]],
     np.ndarray,
@@ -673,9 +743,10 @@ def build_slab_local_graph(
                          base index if more than one of its periodic copies
                          fell inside the crop) -- for logging/meta only
     """
-    o_shifts, h_shifts = resolve_anchor_shifts(
-        o_anchor_idx, h_anchor_idx, positions_ads, cell, pbc
-    )
+    if o_shifts is None or h_shifts is None:
+        o_shifts, h_shifts = resolve_anchor_shifts(
+            o_anchor_idx, h_anchor_idx, positions_ads, cell, pbc
+        )
 
     cell_arr = np.asarray(cell)
 
@@ -694,15 +765,35 @@ def build_slab_local_graph(
     any_center = np.mean([_cart_of(b, s) for (b, s) in any_anchor_images], axis=0)
 
     pbc_arr = np.asarray(pbc, dtype=bool)
-    reps = [0, 0, 0]
+    inv_cell = np.linalg.inv(cell_arr)
+    pads = []
     for d in range(3):
         if pbc_arr[d]:
-            reps[d] = int(np.ceil(local_cutoff / np.linalg.norm(cell_arr[d]))) + 1
-    ranges = [range(-r, r + 1) if r else range(1) for r in reps]
+            pads.append(
+                int(np.ceil(local_cutoff / np.linalg.norm(cell_arr[d]))) + 1
+            )
+        else:
+            pads.append(0)
 
     images: List[Tuple[int, Tuple[int, int, int], np.ndarray]] = []
     for b in ni_indices:
         base_pos = positions_bare[b]
+        # Center this atom's image search on the images closest to the resolved
+        # anchors. This is invariant when individual input atoms are wrapped by
+        # different lattice vectors; a single global shift range is not.
+        centers = []
+        for target in anchor_cart:
+            frac = (target - base_pos) @ inv_cell
+            centers.append(np.where(pbc_arr, np.round(frac), 0.0).astype(int))
+        centers = np.asarray(centers, dtype=int)
+        ranges = []
+        for d in range(3):
+            if pbc_arr[d]:
+                lo = int(centers[:, d].min()) - pads[d]
+                hi = int(centers[:, d].max()) + pads[d]
+                ranges.append(range(lo, hi + 1))
+            else:
+                ranges.append(range(1))
         for sx in ranges[0]:
             for sy in ranges[1]:
                 for sz in ranges[2]:
@@ -906,6 +997,11 @@ def process_frame_pair(
     init_pbc = initial_atoms.pbc
     ni_indices = [i for i, sym in enumerate(init_sym) if sym == "Ni"]
     n_ni = len(ni_indices)
+    if ni_indices != list(range(n_ni)):
+        raise ValueError(
+            f"Frame {frame_idx}: Ni atoms are not the leading block of the "
+            "initial frame; anchor indices would not map onto the graph."
+        )
 
     final_sym, final_pos = get_symbols_positions(final_atoms)
     final_n_ni = sum(sym == "Ni" for sym in final_sym)
@@ -976,6 +1072,16 @@ def process_frame_pair(
 
     if domain_label == "SLAB":
         # Build a finite local graph containing the required periodic images.
+        o_shifts, h_shifts = resolve_anchor_shifts_from_adsorbates(
+            o_anchor_idx,
+            h_anchor_idx,
+            init_pos,
+            o_idx,
+            h_ads_idx,
+            init_pos,
+            init_cell,
+            init_pbc,
+        )
         images, x, local_positions, keep_ni = build_slab_local_graph(
             ni_indices,
             init_pos,
@@ -986,6 +1092,8 @@ def process_frame_pair(
             init_pbc,
             local_cutoff,
             edge_cutoff,
+            o_shifts=o_shifts,
+            h_shifts=h_shifts,
         )
         edge_index, edge_attr = build_edges_and_edge_attr(
             local_positions,

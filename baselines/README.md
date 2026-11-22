@@ -27,22 +27,56 @@ Important columns include:
 
 ## Reproducing the models
 
-Install NumPy, pandas, SciPy, scikit-learn, XGBoost, matplotlib and joblib. From this directory, run:
+Install NumPy, pandas, SciPy, scikit-learn, XGBoost, ASE, matplotlib and joblib. All input paths are relative to the repository, and every script writes new outputs to `reproduced_results/`. From this directory, run:
 
 ```bash
-python train_descriptor_baselines.py
+python build_baseline_dataset.py      # optional: rebuild the descriptor table
+python train_descriptor_baselines.py  # hyperparameter search, fit, validation metrics
+python make_baseline_figures.py       # Figures S8 and S9, external-test evaluation
 ```
 
-All input paths are relative to this directory. The script performs the Ridge and XGBoost hyperparameter searches, evaluates the selected models on the fixed validation set, includes the supplied M6-MACE predictions in the comparison metrics, and writes new outputs to `reproduced_results/`. The `reference_results/` directory contains the metrics, predictions, selected hyperparameters and portable model files used for the paper.
+- `build_baseline_dataset.py` recomputes `datasets/baseline_dataset.csv` from the released M6 train/validation structures in `../models_checkpoints/` and the MACE-relaxed bare geometries in `../ML_relaxed_bare_geom/MACE/training/`. Slab descriptors are evaluated with `periodic_site.py`: the anchors of a site are placed in one compact set of periodic images, GCN neighbours are counted per periodic image relative to those anchors, and the anchors themselves are excluded.
+- `train_descriptor_baselines.py` performs the Ridge and XGBoost hyperparameter searches, evaluates the selected models on the fixed validation set, and includes the supplied M6-MACE predictions in the comparison metrics. Use `--dataset reproduced_results/baseline_dataset.csv` to train on a rebuilt table.
+- `make_baseline_figures.py` draws the internal-validation parity grid (Figure S8) and evaluates the trained baselines on the five external test systems (Figure S9). The external configurations, final motifs and anchor sets are parsed with `../test_systems/analysis_energy_test_systems.py`, and the descriptors are computed on the MACE-relaxed bare test structures. By default it uses the models in `reference_results/`; pass `--results-dir reproduced_results` to use newly trained models.
+
+The `reference_results/` directory contains the metrics, predictions, selected hyperparameters, portable model files and external-test results used for the paper.
 
 The portable JSON model files are included instead of Python joblib files because JSON is less sensitive to package and Python versions.
 
 ## Reference internal-validation results
 
-| Model | All configurations MAE (eV) | Nanoclusters MAE (eV) | Surfaces MAE (eV) |
-|---|---:|---:|---:|
-| Ridge | 0.114 | 0.119 | 0.077 |
-| XGBoost | 0.073 | 0.077 | 0.043 |
-| M6-MACE | 0.031 | 0.030 | 0.040 |
+| Model | Configurations | Absolute MAE (eV) | Absolute RMSE (eV) | Relative MAE (eV) | Relative RMSE (eV) |
+|---|---|---:|---:|---:|---:|
+| Ridge | All | 0.111 | 0.142 | 0.320 | 0.375 |
+| Ridge | Nanoclusters | 0.117 | 0.147 | 0.352 | 0.396 |
+| Ridge | Surfaces | 0.064 | 0.090 | 0.065 | 0.096 |
+| XGBoost | All | 0.072 | 0.097 | 0.143 | 0.186 |
+| XGBoost | Nanoclusters | 0.077 | 0.102 | 0.158 | 0.197 |
+| XGBoost | Surfaces | 0.030 | 0.042 | 0.025 | 0.038 |
+| M6-MACE | All | 0.032 | 0.049 | 0.045 | 0.060 |
+| M6-MACE | Nanoclusters | 0.031 | 0.047 | 0.046 | 0.060 |
+| M6-MACE | Surfaces | 0.045 | 0.064 | 0.035 | 0.060 |
 
-The unrounded values and relative-energy metrics are reported in `reference_results/baseline_metrics.csv`.
+Relative energies are referenced, within each system, to the configuration with the lowest DFT adsorption energy; the same configuration is used as the reference for the predicted energies. The unrounded values are reported in `reference_results/baseline_metrics.csv`.
+
+## Reference external-test results
+
+| System | Model | Configurations | Absolute MAE (eV) | Relative MAE (eV) |
+|---|---|---:|---:|---:|
+| Ni55 | Ridge | 49 | 0.232 | 0.136 |
+| Ni55 | XGBoost | 49 | 0.310 | 0.167 |
+| Ni55 | M6-MACE | 49 | 0.187 | 0.043 |
+| Ni91 | Ridge | 44 | 0.162 | 0.371 |
+| Ni91 | XGBoost | 44 | 0.219 | 0.430 |
+| Ni91 | M6-MACE | 44 | 0.109 | 0.114 |
+| Ni130 | Ridge | 35 | 0.124 | 0.150 |
+| Ni130 | XGBoost | 35 | 0.157 | 0.153 |
+| Ni130 | M6-MACE | 35 | 0.074 | 0.075 |
+| Ni(111)-4x3 | Ridge | 26 | 0.029 | 0.047 |
+| Ni(111)-4x3 | XGBoost | 26 | 0.027 | 0.046 |
+| Ni(111)-4x3 | M6-MACE | 26 | 0.022 | 0.022 |
+| Ni(100)-4x4 | Ridge | 45 | 0.055 | 0.045 |
+| Ni(100)-4x4 | XGBoost | 45 | 0.074 | 0.059 |
+| Ni(100)-4x4 | M6-MACE | 45 | 0.079 | 0.050 |
+
+Unrounded values, RMSEs and R² are reported in `reference_results/baseline_external_metrics.csv`; the per-configuration predictions are in `reference_results/baseline_external_predictions.csv`.

@@ -4,14 +4,14 @@
     "anchors": "DFT-relaxed adsorbate frames, hybrid 2.20/2.30 A O and 2.00/2.20 A H definitions",
     "descriptors": "MACE-relaxed bare Ni structures only",
     "gcn_cutoff_A": 3.0,
-    "periodic_handling": "ASE periodic neighbor images and minimum-image site-centroid distance",
+    "periodic_handling": "site anchors placed in one compact set of periodic images; GCN neighbours counted as (atom, image) pairs relative to those images, excluding the anchors; minimum-image distance between compact site centroids",
     "train_definition": "exact M6 nanoparticle and slab training split; trained from scratch with no M5 merge",
     "validation_definition": "original M6 NP/slab validation observations"
   },
   "repository_files": {
-    "baseline_dataset": "baseline_dataset.csv",
-    "m6_predictions": "M6_energy_model_predictions.csv",
-    "bare_geometries": "../../ML_relaxed_bare_geom/MACE"
+    "train_structures": "../models_checkpoints/M6_energy_model_all_train_data.extxyz",
+    "validation_structures": "../models_checkpoints/M6_energy_model_all_valid_data.extxyz",
+    "bare_geometries": "../ML_relaxed_bare_geom/MACE/training"
   },
   "raw_source_counts": {
     "M6_train_NP": 1490,

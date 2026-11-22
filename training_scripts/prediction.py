@@ -204,6 +204,15 @@ PAIR_DISTANCE_SPLIT = 5.0
 # The CSV then contains near pairs only; candidate IDs depend on this option.
 SCORE_NEAR_ONLY = True
 
+# A bare anchor-index tuple cannot identify which side of the cell is intended
+# when an intra-site anchor pair, or the O/H site separation, lies at an exact
+# half-cell tie. Training resolves those cases from the actual adsorbate
+# coordinates; bare inference has no equivalent information. An O/H tie is
+# flagged only when the tied images give different graphs (symmetric slabs give
+# identical mirror-image graphs). Skip flagged candidates by default instead of
+# scoring an arbitrary periodic image.
+SKIP_PBC_AMBIGUOUS = True
+
 # Slabs are detected from the PBC flags in the input structure. USE_PBC
 # enables MIC-aware site finding; slab GNN graphs use explicit periodic images.
 USE_PBC = True
@@ -377,6 +386,7 @@ def write_prediction_settings(
             "maximum_site_distance_A": float(MAX_SITE_DIST),
             "pair_distance_split_A": float(PAIR_DISTANCE_SPLIT),
             "score_near_only": bool(SCORE_NEAR_ONLY),
+            "skip_pbc_ambiguous": bool(SKIP_PBC_AMBIGUOUS),
             "maximum_candidates": (
                 None if MAX_CANDIDATES is None else int(MAX_CANDIDATES)
             ),
@@ -806,15 +816,37 @@ def build_candidate_data(
 
     if domain_label == "SLAB":
         # Slabs use explicit periodic images, matching the energy training graph.
-        # Candidate anchors and coordinates both refer to the same bare cell.
-        images, x, local_positions, keep_ni = energy_module.build_slab_local_graph(
-            ni_indices, positions, o_anchor_idx, h_anchor_idx,
-            positions, cell, pbc, local_cutoff, edge_cutoff,
+        # Anchor images are resolved here from the candidate site geometry so
+        # that the graph encodes the same O/H arrangement as site_site_distance.
+        o_shifts, h_shifts, intra_site_tie, alt_h_shifts = resolve_candidate_anchor_shifts(
+            tuple(o_anchor_idx), tuple(h_anchor_idx), positions,
         )
+        images, x, local_positions, keep_ni = build_slab_graph_with_shifts(
+            energy_module, ni_indices, positions, o_anchor_idx, h_anchor_idx,
+            o_shifts, h_shifts, cell, pbc, local_cutoff, edge_cutoff,
+        )
+        # Bare anchor indices do not uniquely identify a physical candidate if
+        # either site has an intra-site image tie. An equally close alternative
+        # O/H relative image is only ambiguous if it changes the graph: on a
+        # symmetric slab the tied images are mirror copies and give the same
+        # input, so the model prediction does not depend on the choice.
+        pbc_ambiguous = bool(intra_site_tie)
+        if alt_h_shifts and not pbc_ambiguous:
+            for alt_shifts in alt_h_shifts:
+                _, x_alt, local_positions_alt, _ = build_slab_graph_with_shifts(
+                    energy_module, ni_indices, positions, o_anchor_idx, h_anchor_idx,
+                    o_shifts, alt_shifts, cell, pbc, local_cutoff, edge_cutoff,
+                )
+                if not same_slab_graph(
+                    x, local_positions, x_alt, local_positions_alt, edge_cutoff,
+                ):
+                    pbc_ambiguous = True
+                    break
         edge_index, edge_attr = energy_module.build_edges_and_edge_attr(
             local_positions, cell, [False, False, False], edge_cutoff,
         )
     else:
+        pbc_ambiguous = False
         # NP graphs use the exact feature and edge construction from training.
         keep_ni = energy_module.select_bare_local_environment(
             ni_indices=ni_indices,
@@ -893,6 +925,7 @@ def build_candidate_data(
             set(o_anchor_idx) & set(h_anchor_idx)
         ),
         "site_distance": float(site_distance),
+        "pbc_image_ambiguous": bool(pbc_ambiguous),
         "min_cross_dist": float(np.min(cross_dists)),
         "mean_cross_dist": float(np.mean(cross_dists)),
         "max_cross_dist": float(np.max(cross_dists)),
@@ -1177,6 +1210,214 @@ def compute_site_position(site: Tuple[int, ...], positions: np.ndarray) -> np.nd
         return np.zeros(3, dtype=float)
     coords = unwrap_indices_around_reference(list(site), positions, ref_idx=site[0])
     return coords.mean(axis=0)
+
+
+# Two periodic images whose lengths differ only at numerical precision are
+# treated as a true tie: the index-based site definition cannot say which one
+# is meant. Across the supplied slab systems, genuine ties differ by at most
+# 5e-9 A, whereas the smallest non-tied gap is 1.59 A.
+PBC_IMAGE_TIE_TOL = 1.0e-6  # Angstrom
+
+
+def _image_margin(vec: np.ndarray) -> float:
+    """Length gap between the shortest and second-shortest periodic image of vec.
+
+    A small gap means the minimum-image choice is effectively arbitrary (e.g. a
+    nearest-neighbour pair separated by exactly half a lattice vector, as in a
+    Ni(111)-2x2 cell).
+    """
+    if not _pbc_active():
+        return float("inf")
+    cell, pbc = _cell_pbc()
+    cell_arr = np.asarray(cell)
+    pbc_arr = np.asarray(pbc, dtype=bool)
+    inv_cell = np.linalg.inv(cell_arr)
+    frac = -np.asarray(vec, dtype=float) @ inv_cell
+    center = np.where(pbc_arr, np.round(frac), 0.0).astype(int)
+    offsets = [range(-1, 2) if periodic else range(1) for periodic in pbc_arr]
+    lengths = sorted(
+        float(
+            np.linalg.norm(
+                np.asarray(vec, dtype=float)
+                + (center + np.array([a, b, c])) @ cell_arr
+            )
+        )
+        for a in offsets[0] for b in offsets[1] for c in offsets[2]
+    )
+    return lengths[1] - lengths[0] if len(lengths) > 1 else float("inf")
+
+
+def resolve_candidate_anchor_shifts(
+    o_site: Tuple[int, ...],
+    h_site: Tuple[int, ...],
+    positions: np.ndarray,
+):
+    """Integer cell shifts placing each candidate anchor in one consistent image.
+
+    Each site is unwrapped around its first anchor (as in compute_site_position),
+    and the H site is then moved rigidly so that its centroid sits at
+    ``c_O + MIC(c_H - c_O)``. This is exactly the O/H arrangement used by
+    site_site_distance() for candidate filtering, so the graph encodes the same
+    pair that passed the distance filters.
+
+    Returns (o_shifts, h_shifts, intra_site_tie, alt_h_shifts):
+      intra_site_tie -- an anchor pair inside one site has two nearly equally
+                        short images, so the site geometry itself is undefined;
+      alt_h_shifts   -- H shift maps for other H-site images whose centroid is
+                        (within PBC_IMAGE_TIE_TOL) as close to the O site.
+    """
+    # Anchor tuples describe unordered sites. Canonicalizing them prevents the
+    # arbitrary caller order from selecting a different reference atom/image.
+    o_site = tuple(sorted(o_site))
+    h_site = tuple(sorted(h_site))
+    zero = (0, 0, 0)
+    if not _pbc_active():
+        return {b: zero for b in o_site}, {b: zero for b in h_site}, False, []
+
+    cell, pbc = _cell_pbc()
+    cell_arr = np.asarray(cell)
+    inv_cell = np.linalg.inv(cell_arr)
+    pbc_arr = np.asarray(pbc, dtype=bool)
+    intra_site_tie = False
+
+    def _to_shift(cart_shift):
+        frac = np.asarray(cart_shift) @ inv_cell
+        return tuple(int(v) for v in np.where(pbc_arr, np.round(frac), 0))
+
+    def _unwrap(site):
+        nonlocal intra_site_tie
+        ref_pos = np.asarray(positions[site[0]], dtype=float)
+        shifts, coords = {}, []
+        for b in site:
+            raw = np.asarray(positions[b], dtype=float) - ref_pos
+            if b != site[0] and _image_margin(raw) < PBC_IMAGE_TIE_TOL:
+                intra_site_tie = True
+            u = ref_pos + mic_vector(raw)
+            shifts[b] = _to_shift(u - np.asarray(positions[b], dtype=float))
+            coords.append(u)
+        return shifts, np.mean(coords, axis=0)
+
+    o_shifts, c_o = _unwrap(o_site)
+    h_shifts, c_h = _unwrap(h_site)
+
+    v = c_h - c_o
+    v_mic = mic_vector(v)
+    rigid = np.array(_to_shift((c_o + v_mic) - c_h))
+    best = float(np.linalg.norm(v_mic))
+    ranges = [range(-1, 2) if p else range(1) for p in pbc_arr]
+    alt_rigids = []
+    for a in ranges[0]:
+        for b in ranges[1]:
+            for c in ranges[2]:
+                if a == b == c == 0:
+                    continue
+                cand = rigid + np.array([a, b, c])
+                d = float(np.linalg.norm(v + cand @ cell_arr))
+                if d - best < PBC_IMAGE_TIE_TOL:
+                    alt_rigids.append(tuple(int(x) for x in cand))
+
+    def _apply(r):
+        return {b: tuple(x + y for x, y in zip(s, r)) for b, s in h_shifts.items()}
+
+    return o_shifts, _apply(tuple(int(x) for x in rigid)), intra_site_tie, [_apply(r) for r in alt_rigids]
+
+
+def _slab_graph_api(module) -> str:
+    """Identify how ``module.build_slab_local_graph`` accepts anchor images.
+
+    "keyword_shifts" -- positional (..., anchor_positions, cell, pbc,
+                        local_cutoff, edge_cutoff) plus optional keyword
+                        o_shifts/h_shifts; used when supplied.
+    "positional_shifts" -- (..., o_shifts, h_shifts, cell, pbc, ...), shifts
+                        always used.
+    "legacy"         -- no shift arguments; images come from the module-level
+                        resolve_anchor_shifts(), which can be overridden.
+    Anything else is rejected with an explicit error rather than guessed.
+    """
+    fn = getattr(module, "build_slab_local_graph", None)
+    if fn is None:
+        return "none"
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return "unknown"
+    names = list(params)
+    if "o_shifts" in params and "h_shifts" in params:
+        if names.index("o_shifts") == 4 and names.index("h_shifts") == 5:
+            return "positional_shifts"
+        if params["o_shifts"].default is None and params["h_shifts"].default is None:
+            return "keyword_shifts"
+        return "unknown"
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):
+        src = ""
+    if len(names) >= 9 and "resolve_anchor_shifts(" in src and hasattr(module, "resolve_anchor_shifts"):
+        return "legacy"
+    return "unknown"
+
+
+def build_slab_graph_with_shifts(
+    module, ni_indices, positions, o_anchor_idx, h_anchor_idx,
+    o_shifts, h_shifts, cell, pbc, local_cutoff, edge_cutoff,
+):
+    """Call ``module.build_slab_local_graph`` with explicitly resolved shifts."""
+    api = _slab_graph_api(module)
+    if api == "keyword_shifts":
+        return module.build_slab_local_graph(
+            ni_indices, positions, o_anchor_idx, h_anchor_idx,
+            positions, cell, pbc, local_cutoff, edge_cutoff,
+            o_shifts=o_shifts, h_shifts=h_shifts,
+        )
+    if api == "positional_shifts":
+        return module.build_slab_local_graph(
+            ni_indices, positions, o_anchor_idx, h_anchor_idx,
+            o_shifts, h_shifts, cell, pbc, local_cutoff, edge_cutoff,
+        )
+    if api == "legacy":
+        original = module.resolve_anchor_shifts
+        module.resolve_anchor_shifts = lambda *args, **kwargs: (o_shifts, h_shifts)
+        try:
+            return module.build_slab_local_graph(
+                ni_indices, positions, o_anchor_idx, h_anchor_idx,
+                positions, cell, pbc, local_cutoff, edge_cutoff,
+            )
+        finally:
+            module.resolve_anchor_shifts = original
+    try:
+        where = inspect.getsourcefile(module)
+        sig = str(inspect.signature(module.build_slab_local_graph))
+    except (TypeError, ValueError, AttributeError):
+        where, sig = getattr(module, "__file__", "?"), "?"
+    raise RuntimeError(
+        f"Unsupported build_slab_local_graph in {module.__name__} ({where}).\n"
+        f"  signature: {sig}"
+    )
+
+
+def same_slab_graph(x_a, pos_a, x_b, pos_b, edge_cutoff: float, atol: float = 1.0e-3) -> bool:
+    """True if two slab graphs have the same node features and edge lengths.
+
+    Node-feature rows and Ni-Ni edge lengths are compared as sorted multisets,
+    so graphs that differ only by a rigid motion or a mirror operation (as for
+    tied periodic images on a symmetric slab) compare equal.
+    """
+    def _rows(x):
+        x = np.round(np.asarray(x, dtype=float), 4)
+        return x[np.lexsort(x.T[::-1])]
+
+    def _edges(pos):
+        pos = np.asarray(pos, dtype=float)
+        d = np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
+        iu = np.triu_indices(len(pos), k=1)
+        d = d[iu]
+        return np.sort(d[d <= edge_cutoff])
+
+    rows_a, rows_b = _rows(x_a), _rows(x_b)
+    if rows_a.shape != rows_b.shape or not np.allclose(rows_a, rows_b, atol=atol):
+        return False
+    edges_a, edges_b = _edges(pos_a), _edges(pos_b)
+    return edges_a.shape == edges_b.shape and np.allclose(edges_a, edges_b, atol=atol)
 
 
 def site_site_distance(o_site: Tuple[int, ...], h_site: Tuple[int, ...], positions: np.ndarray) -> float:
@@ -1474,9 +1715,12 @@ def build_retention_candidate_data(
         cell = CURRENT_ATOMS.get_cell()
         pbc = CURRENT_ATOMS.get_pbc()
 
-        images, x, local_positions, keep_ni = cls_module.build_slab_local_graph(
-            ni_indices, positions, o_anchor_idx, h_anchor_idx,
-            positions, cell, pbc, local_cutoff, edge_cutoff,
+        o_shifts, h_shifts, _, _ = resolve_candidate_anchor_shifts(
+            tuple(o_anchor_idx), tuple(h_anchor_idx), positions,
+        )
+        images, x, local_positions, keep_ni = build_slab_graph_with_shifts(
+            cls_module, ni_indices, positions, o_anchor_idx, h_anchor_idx,
+            o_shifts, h_shifts, cell, pbc, local_cutoff, edge_cutoff,
         )
         edge_index, edge_attr = cls_module.build_edges_and_edge_attr(
             local_positions, cell, [False, False, False], edge_cutoff,
@@ -1557,24 +1801,19 @@ def check_candidate_support(meta, training_support):
 # ============================================================
 
 def report_graph_representation(module, label: str) -> None:
-    """Report whether the imported model uses separate O/H periodic images."""
-    if not hasattr(module, "build_slab_local_graph"):
+    """Report how slab periodic images are resolved for this module."""
+    api = _slab_graph_api(module)
+    if api == "none":
         print(f"{label} slab representation: unique-atom + MIC (no explicit-image graph)")
-        return
-    try:
-        src = inspect.getsource(module.resolve_anchor_shifts)
-    except (OSError, TypeError, AttributeError):
-        print(f"{label} slab representation: explicit periodic images (shift handling unknown)")
-        return
-    if "return o_shifts, h_shifts" in src:
-        print(f"{label} slab representation: explicit periodic images, separate O/H shifts")
+    elif api in ("keyword_shifts", "positional_shifts"):
+        print(f"{label} slab representation: explicit periodic images; anchor shifts "
+              "supplied by prediction.py (site-geometry resolution)")
+    elif api == "legacy":
+        print(f"{label} slab representation: original module; its resolve_anchor_shifts is "
+              "overridden during graph construction with prediction.py's site-geometry shifts")
     else:
-        print(
-            f"WARNING: {label} slab representation: explicit periodic images, but "
-            "resolve_anchor_shifts MERGES the O and H shift maps. A base Ni atom shared "
-            "by both sites keeps only one image, distorting that site. Candidates scored "
-            "with this module do not match a checkpoint trained with the corrected graph."
-        )
+        print(f"WARNING: {label} slab representation: unsupported build_slab_local_graph "
+              "in the imported module; slab inputs will stop with an explanatory error.")
 
 
 def main():
@@ -1712,6 +1951,7 @@ def main():
 
     candidate_id = 0
     n_skipped_far = 0
+    n_skipped_pbc_ambiguous = 0
     site_types = ["T", "B", "H", "F"]
 
     for o_type in site_types:
@@ -1735,7 +1975,15 @@ def main():
                         h_anchor_idx=list(h_site),
                         domain_label=domain_label,
                     )
-                    
+
+                    if (
+                        domain_label == "SLAB"
+                        and SKIP_PBC_AMBIGUOUS
+                        and meta.get("pbc_image_ambiguous", False)
+                    ):
+                        n_skipped_pbc_ambiguous += 1
+                        continue
+
                     support_info = check_candidate_support(meta, training_support)
 
                     e_pred = predict_candidate(model, data)
@@ -1780,6 +2028,7 @@ def main():
                         "mean_cross_dist": meta["mean_cross_dist"],
                         "max_cross_dist": meta["max_cross_dist"],
                         "site_distance": meta.get("site_distance", float("nan")),
+                        "pbc_image_ambiguous": meta.get("pbc_image_ambiguous", False),
                         "seen_motif": support_info["seen_motif"],
                         "support_count": support_info["support_count"],
                         "support_o_anchor_rule_counts": support_info["support_o_anchor_rule_counts"],
@@ -1811,6 +2060,22 @@ def main():
         print(f"  {motif}: {motif_counts[motif]}")
 
     print(f"\nTotal candidates scored: {len(results)}")
+    if domain_label == "SLAB" and SKIP_PBC_AMBIGUOUS:
+        print(
+            "PBC-ambiguous candidates skipped unscored: "
+            f"{n_skipped_pbc_ambiguous}"
+        )
+    amb_ids = sorted(r["candidate_id"] for r in results if r["pbc_image_ambiguous"])
+    n_amb = len(amb_ids)
+    if n_amb:
+        print(
+            f"WARNING: {n_amb} candidates have an ambiguous periodic image: an "
+            "anchor pair, or the O-H site separation, is ~half a lattice vector "
+            "and the alternative image gives a different graph. Their anchor "
+            "indices do not define a unique geometry; one image was scored. "
+            "A larger surface cell removes this."
+        )
+        print(f"  Ambiguous candidate_id values: {amb_ids}")
     if SCORE_NEAR_ONLY:
         print(
             f"Far candidates skipped unscored: {n_skipped_far} "
@@ -1879,6 +2144,7 @@ def main():
         "mean_cross_dist_A",
         "max_cross_dist_A",
         "site_distance_A",
+        "pbc_image_ambiguous",
         "pred_Eads_eV",
         "retention_probability",
         "retention_flag",
@@ -1913,6 +2179,7 @@ def main():
                 f"{row['mean_cross_dist']:.6f}",
                 f"{row['max_cross_dist']:.6f}",
                 f"{row.get('site_distance', np.nan):.6f}",
+                row["pbc_image_ambiguous"],
                 f"{row['pred_Eads_eV']:.8f}",
                 fmt_score(row["retention_probability"]),
                 row["retention_flag"],
