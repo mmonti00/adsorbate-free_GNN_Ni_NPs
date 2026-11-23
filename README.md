@@ -23,7 +23,7 @@ and H* in a threefold hollow.
 |---|---|
 | `datasets/` | Energy and retention datasets in extxyz format, plus the notebook used to construct initial OH* + H* configurations. |
 | `ML_relaxed_bare_geom/MACE/` | MACE-MH-1 geometry-optimization examples and the relaxed bare Ni geometries used for training and testing. |
-| `models_checkpoints/` | Released M5 and M6 energy checkpoints, the retention checkpoint, and the exact M6 train/validation structures associated with the released M6 model. |
+| `models_checkpoints/` | Released M5 and M6 energy checkpoints, the M6 model trained from scratch (baseline control), the retention checkpoint, and the exact M6 train/validation structures associated with the released M6 model. |
 | `training_scripts/` | M5/M6 energy training, retention training, model analyses, screening/inference, and exact paper/checkpoint split manifests. |
 | `test_systems/` | Ranked candidates, DFT initial and optimized structures, reference energies, and validation analyses for the five external test systems; it also contains prediction-only results for larger Ni nanoclusters. |
 | `baselines/` | Self-contained Ridge and XGBoost datasets, training code, model files, and reference results. |
@@ -141,9 +141,11 @@ python train_M6_energy_model.py
 ```
 
 By default, M6 is fine-tuned from the released M5 checkpoint. Nanocluster and
-surface samples have regression weights of 1 and 4, respectively. The script
-also supports training the same architecture from scratch by changing
-`FINE_TUNE`.
+surface samples have regression weights of 1 and 4, respectively. Setting
+`FINE_TUNE = False` trains the same architecture from scratch on the same split;
+this reproduces the M6-MACE (from scratch) control of the baseline comparison
+(`models_checkpoints/M6_energy_model_from_scratch.pt`, early stopping after 267
+epochs).
 
 ### Retention model
 
@@ -290,15 +292,17 @@ the protocol and reference results.
 ## Descriptor-based baselines
 
 The baseline directory contains the exact M6 training and validation split
-represented as structural descriptors, the saved M6 predictions, and the
-Ridge/XGBoost reference models and results. Training uses only files in this
-directory; the descriptor builder and the figure script also read the released
-structures, bare geometries, and external test systems elsewhere in the
-repository.
+represented as structural descriptors, the saved predictions of M6-MACE and of
+M6-MACE trained from scratch, and the Ridge/XGBoost reference models and
+results. Training uses only files in this directory; the descriptor builder,
+the external prediction script, and the figure script also read the released
+structures, checkpoints, bare geometries, and external test systems elsewhere
+in the repository.
 
 ```bash
 cd baselines
 python train_descriptor_baselines.py
+python predict_external_M6_from_scratch.py   # optional
 python make_baseline_figures.py
 ```
 

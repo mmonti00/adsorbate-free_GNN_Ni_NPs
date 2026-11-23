@@ -164,7 +164,9 @@ RBF_GAMMA = 10.0
 BATCH_SIZE = 32
 LR = 3e-4 if FINE_TUNE else 8e-4
 WEIGHT_DECAY = 1e-6
-EPOCHS = 100 if FINE_TUNE else 200
+# From scratch (FINE_TUNE = False), training is ended by early stopping well
+# before this limit; the SI control model stopped after 267 epochs.
+EPOCHS = 100 if FINE_TUNE else 1000
 VAL_FRACTION_NP = 0.20
 VAL_FRACTION_SLAB = 0.20
 EARLY_STOPPING_PATIENCE = 25 if FINE_TUNE else 25

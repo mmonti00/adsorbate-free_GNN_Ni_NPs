@@ -3,9 +3,14 @@
 
 Run from the ``baselines`` directory (``python make_baseline_figures.py``).
 
-Figure 1 is a 2 x 3 internal-validation parity grid for Ridge, XGBoost,
-and M6-MACE (Figure S8). Figure 2 reports absolute- and relative-energy MAEs
-on the five external test systems (Figure S9). The external descriptors are
+Figure 1 is a 2 x 4 internal-validation parity grid for Ridge, XGBoost,
+M6-MACE trained from scratch, and M6-MACE (Figure S8). Figure 2 reports
+absolute- and relative-energy MAEs on the five external test systems (Figure S9).
+M6-MACE from scratch is the SI control trained on the same split without
+initialization from M5; its validation predictions are read from
+``datasets/M6_from_scratch_predictions.csv`` and its external-test predictions
+from ``M6_from_scratch_external_predictions.csv`` in the results directory
+(written by ``predict_external_M6_from_scratch.py``). The external descriptors are
 computed on the MACE-relaxed bare test structures from the final DFT motifs
 and anchor sets, which are parsed with ``test_systems/analysis_energy_test_systems.py``.
 
@@ -50,16 +55,21 @@ REPOSITORY_ROOT = HERE.parent
 RESULTS_DIR = HERE / "reference_results"
 OUTPUT_DIR = HERE / "reproduced_results"
 M6_INTERNAL_ERRORS = HERE / "datasets" / "M6_energy_model_predictions.csv"
+M6_SCRATCH_INTERNAL_ERRORS = HERE / "datasets" / "M6_from_scratch_predictions.csv"
+M6_SCRATCH_EXTERNAL_FILE = "M6_from_scratch_external_predictions.csv"
+SCRATCH = "M6-MACE (from scratch)"
 MODEL_VALIDATION_ROOT = REPOSITORY_ROOT / "test_systems"
 MODEL_VALIDATION_SCRIPT = MODEL_VALIDATION_ROOT / "analysis_energy_test_systems.py"
 MACE_BARE_DIR = REPOSITORY_ROOT / "ML_relaxed_bare_geom" / "MACE" / "testing"
 
-MODEL_ORDER = ("Ridge", "XGBoost", "M6-MACE")
+MODEL_ORDER = ("Ridge", "XGBoost", SCRATCH, "M6-MACE")
 MODEL_COLORS = {
     "Ridge": "#7F7F7F",
     "XGBoost": "#DD8452",
+    SCRATCH: "#A9C1E3",
     "M6-MACE": "#4C72B0",
 }
+MODEL_HATCH = {SCRATCH: "//"}
 DOMAIN_STYLE = {
     "NP": {
         "label": "Nanoclusters",
@@ -160,12 +170,20 @@ def verify_internal_inputs(models: dict[str, pd.DataFrame]) -> None:
                 raise ValueError(f"{model_name}: DFT targets differ for {system}")
 
 
+def load_m6_validation(path: Path) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    frame = frame[frame["split"] == "validation"].copy()
+    return frame.rename(columns={
+        "group": "system",
+        "true_energy": "DFT_Eads_eV",
+        "pred_energy": "pred_Eads_eV",
+    })[["domain", "system", "DFT_Eads_eV", "pred_Eads_eV"]]
+
+
 def load_internal_models(
-    results_dir: Path, m6_errors_path: Path
+    results_dir: Path, m6_errors_path: Path, scratch_errors_path: Path
 ) -> dict[str, pd.DataFrame]:
     baseline = pd.read_csv(results_dir / "baseline_validation_predictions.csv")
-    m6 = pd.read_csv(m6_errors_path)
-    m6 = m6[m6["split"] == "validation"].copy()
 
     common_baseline = baseline[["domain", "system", "Eads_DFT_eV"]].rename(
         columns={"Eads_DFT_eV": "DFT_Eads_eV"}
@@ -174,13 +192,17 @@ def load_internal_models(
     xgboost = common_baseline.assign(
         pred_Eads_eV=baseline["Nonlinear_pred_eV"].to_numpy()
     )
-    m6 = m6.rename(columns={
-        "group": "system",
-        "true_energy": "DFT_Eads_eV",
-        "pred_energy": "pred_Eads_eV",
-    })[["domain", "system", "DFT_Eads_eV", "pred_Eads_eV"]]
+    full_m6 = pd.read_csv(m6_errors_path)
+    full_scratch = pd.read_csv(scratch_errors_path)
+    if not full_scratch["split"].equals(full_m6["split"]):
+        raise ValueError("M6-MACE from scratch does not use the M6 train/validation split")
 
-    models = {"Ridge": ridge, "XGBoost": xgboost, "M6-MACE": m6}
+    models = {
+        "Ridge": ridge,
+        "XGBoost": xgboost,
+        SCRATCH: load_m6_validation(scratch_errors_path),
+        "M6-MACE": load_m6_validation(m6_errors_path),
+    }
     verify_internal_inputs(models)
     return models
 
@@ -246,7 +268,7 @@ def print_internal_metrics(models: dict[str, pd.DataFrame]) -> None:
     print("INTERNAL VALIDATION")
     print("=" * 77)
     print("Relative energies use the DFT-minimum configuration as the common reference.")
-    print(f"{'representation':<12} {'model':<10} {'n':>5} {'MAE (eV)':>11} "
+    print(f"{'representation':<12} {'model':<24} {'n':>5} {'MAE (eV)':>11} "
           f"{'RMSE (eV)':>12} {'R2':>9}")
     print("-" * 77)
     for representation in ("absolute", "relative"):
@@ -259,10 +281,29 @@ def print_internal_metrics(models: dict[str, pd.DataFrame]) -> None:
                 true_column, pred_column = "DFT_Eads_eV", "pred_Eads_eV"
             metrics = regression_metrics(frame[true_column], frame[pred_column])
             print(
-                f"{representation:<12} {model_name:<10} {metrics['n']:>5d} "
+                f"{representation:<12} {model_name:<24} {metrics['n']:>5d} "
                 f"{metrics['MAE']:>11.3f} {metrics['RMSE']:>12.3f} "
                 f"{metrics['R2']:>9.3f}"
             )
+
+
+def internal_metric_table(models: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """MAE, RMSE and R2 per model for all, nanocluster and surface configurations."""
+    rows = []
+    for model_name in MODEL_ORDER:
+        absolute = models[model_name]
+        relative = add_relative_energies(absolute)
+        for domain in ("ALL", "NP", "SLAB"):
+            keep = slice(None) if domain == "ALL" else absolute["domain"] == domain
+            for representation, frame, true_column, pred_column in (
+                ("absolute", absolute, "DFT_Eads_eV", "pred_Eads_eV"),
+                ("relative", relative, "DFT_relative_eV", "pred_relative_eV"),
+            ):
+                subset = frame.loc[keep]
+                metrics = regression_metrics(subset[true_column], subset[pred_column])
+                rows.append({"model": model_name, "domain": domain,
+                             "representation": representation, **metrics})
+    return pd.DataFrame(rows)
 
 
 def plot_internal_validation(
@@ -279,7 +320,7 @@ def plot_internal_validation(
         list(relative_models.values()), "DFT_relative_eV", "pred_relative_eV"
     )
 
-    fig, axes = plt.subplots(2, 3, figsize=(15.4, 10.1))
+    fig, axes = plt.subplots(2, len(MODEL_ORDER), figsize=(5.13 * len(MODEL_ORDER), 10.1))
     for column, model_name in enumerate(MODEL_ORDER):
         absolute = models[model_name]
         relative = relative_models[model_name]
@@ -441,6 +482,9 @@ def build_external_predictions(
     )
     xgboost_model = XGBRegressor()
     xgboost_model.load_model(results_dir / "xgboost_baseline_native.json")
+    scratch_predictions = pd.read_csv(results_dir / M6_SCRATCH_EXTERNAL_FILE).set_index(
+        ["system", "config"]
+    )
 
     rows: list[dict[str, object]] = []
     for system in EXTERNAL_SYSTEMS:
@@ -495,6 +539,12 @@ def build_external_predictions(
                 {**common, "model": "XGBoost", "pred_Eads_eV": xgboost_prediction},
                 {**common, "model": "M6-MACE", "pred_Eads_eV": float(row["M6_Eads_eV"])},
             ])
+            scratch = scratch_predictions.loc[(system.label, int(row["config"]))]
+            if abs(float(scratch["DFT_Eads_eV"]) - common["DFT_Eads_eV"]) > 1e-6:
+                raise ValueError(
+                    f"{system.label} config {row['config']}: {M6_SCRATCH_EXTERNAL_FILE} does not match"
+                )
+            rows.append({**common, "model": SCRATCH, "pred_Eads_eV": float(scratch["pred_Eads_eV"])})
 
         print(
             f"{system.label}: {len(frame)} common DFT/model configurations; "
@@ -545,14 +595,14 @@ def print_transfer_metrics(metrics: pd.DataFrame) -> None:
     print("=" * 108)
     print("Relative energies use the DFT-minimum configuration as the common reference.")
     print(
-        f"{'system':<10} {'model':<10} {'n':>4}  "
+        f"{'system':<10} {'model':<24} {'n':>4}  "
         f"{'abs MAE':>8} {'abs RMSE':>9} {'abs R2':>8}  "
         f"{'rel MAE':>8} {'rel RMSE':>9} {'rel R2':>8}"
     )
     print("-" * 108)
     for _, row in metrics.iterrows():
         print(
-            f"{row['system']:<10} {row['model']:<10} {int(row['n']):>4d}  "
+            f"{row['system']:<10} {row['model']:<24} {int(row['n']):>4d}  "
             f"{row['absolute_MAE']:>8.3f} {row['absolute_RMSE']:>9.3f} "
             f"{row['absolute_R2']:>8.3f}  {row['relative_MAE']:>8.3f} "
             f"{row['relative_RMSE']:>9.3f} {row['relative_R2']:>8.3f}"
@@ -564,8 +614,8 @@ def plot_transferability(
 ) -> Path:
     fig, axes = plt.subplots(1, 2, figsize=(15.0, 5.8), sharey=True)
     x_positions = np.arange(len(EXTERNAL_SYSTEMS), dtype=float)
-    width = 0.24
-    offsets = (-width, 0.0, width)
+    width = 0.20
+    offsets = (np.arange(len(MODEL_ORDER)) - (len(MODEL_ORDER) - 1) / 2) * width
     maximum_mae = float(
         metrics[["absolute_MAE", "relative_MAE"]].to_numpy().max()
     )
@@ -591,6 +641,7 @@ def plot_transferability(
                 color=MODEL_COLORS[model_name],
                 edgecolor="black",
                 linewidth=0.75,
+                hatch=MODEL_HATCH.get(model_name),
                 label=model_name,
                 zorder=3,
             )
@@ -604,7 +655,8 @@ def plot_transferability(
         axis.set_ylim(0.0, upper_limit)
         axis.yaxis.set_major_locator(MaxNLocator(nbins=6))
         axis.yaxis.set_minor_locator(AutoMinorLocator(2))
-        axis.tick_params(axis="y", which="major", labelsize=15, length=6)
+        # labelleft=True keeps the values on panel (b) despite the shared y axis.
+        axis.tick_params(axis="y", which="major", labelsize=15, length=6, labelleft=True)
         axis.tick_params(axis="y", which="minor", length=3)
         axis.tick_params(axis="x", length=0, pad=8)
         axis.grid(axis="y", alpha=0.23, linewidth=0.8, zorder=1)
@@ -613,7 +665,7 @@ def plot_transferability(
     handles = [
         Patch(
             facecolor=MODEL_COLORS[model_name], edgecolor="black",
-            linewidth=0.75, label=model_name,
+            linewidth=0.75, hatch=MODEL_HATCH.get(model_name), label=model_name,
         )
         for model_name in MODEL_ORDER
     ]
@@ -645,6 +697,9 @@ def main() -> None:
                         help="Directory with the trained baseline models and validation predictions.")
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--m6-internal-errors", type=Path, default=M6_INTERNAL_ERRORS)
+    parser.add_argument(
+        "--m6-scratch-internal-errors", type=Path, default=M6_SCRATCH_INTERNAL_ERRORS
+    )
     parser.add_argument("--validation-root", type=Path, default=MODEL_VALIDATION_ROOT)
     parser.add_argument(
         "--validation-script", type=Path, default=MODEL_VALIDATION_SCRIPT
@@ -654,9 +709,12 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     internal_models = load_internal_models(
-        args.results_dir, args.m6_internal_errors
+        args.results_dir, args.m6_internal_errors, args.m6_scratch_internal_errors
     )
     print_internal_metrics(internal_models)
+    internal_metric_table(internal_models).to_csv(
+        args.output_dir / "internal_validation_metrics.csv", index=False
+    )
     internal_pdf = plot_internal_validation(
         internal_models, args.output_dir
     )
