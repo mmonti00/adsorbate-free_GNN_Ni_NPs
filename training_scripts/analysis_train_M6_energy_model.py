@@ -64,7 +64,10 @@ print(f"Training module: {TRAIN_MODULE} ({getattr(tr, '__file__', '?')})")
 
 BareSiteGCNN = tr.BareSiteGCNN
 DEVICE = tr.DEVICE
-MODEL_PATH = tr.MODEL_OUT
+# Checkpoint to evaluate. The default is the released M6 model, which reproduces
+# the validation metrics reported in the paper. To evaluate a checkpoint written
+# by train_M6_energy_model.py in this directory, set MODEL_PATH = tr.MODEL_OUT.
+MODEL_PATH = "../models_checkpoints/M6_energy_model.pt"
 initial_refs = tr.load_initial_reference_structures()
 
 # ============================================================

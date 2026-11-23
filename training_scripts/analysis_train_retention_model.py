@@ -92,7 +92,10 @@ USE_HEADER_INITIAL_SITE = train_mod.USE_HEADER_INITIAL_SITE
 # SETTINGS
 # ============================================================
 
-MODEL_PATH = MODEL_OUT
+# Checkpoint to evaluate. The default is the released retention model; to
+# evaluate a checkpoint written by train_retention_classifier.py in this
+# directory, set MODEL_PATH = MODEL_OUT.
+MODEL_PATH = "../models_checkpoints/retention_model.pt"
 
 DOMAIN_FILES = {
     "NP": (NP_INITIAL_EXTXYZ_FILE, NP_FINAL_EXTXYZ_FILE),

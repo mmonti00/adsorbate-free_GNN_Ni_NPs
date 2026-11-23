@@ -134,12 +134,15 @@ RANKING_FILENAME = {
     "Ni111_4x3": "Ni111_ranked_candidates.csv",
     "Ni100_4x4": "Ni100_ranked_candidates.csv",
 }.get(SYSTEM_NAME, f"{SYSTEM_NAME}_ranked_candidates.csv")
+# New rankings are written outside test_systems/, whose rankings are the
+# reference data used in the paper; an existing file there is never overwritten.
 OUT_CSV_ALL = (
     REPOSITORY_ROOT
-    / "test_systems"
+    / "predictions"
     / SYSTEM_NAME
     / RANKING_FILENAME
 )
+REFERENCE_RANKING_DIR = REPOSITORY_ROOT / "test_systems"
 
 # Used ONLY for motif-support/OOD columns, not for GNN prediction. These are
 # stored beside the released energy checkpoint.
@@ -286,6 +289,12 @@ def validate_user_settings() -> None:
     ):
         raise ValueError(
             "SUPPORT_PERCENTILES must contain two increasing values in [0, 100]."
+        )
+    output = Path(OUT_CSV_ALL).resolve()
+    if output.is_relative_to(REFERENCE_RANKING_DIR.resolve()) and output.exists():
+        raise FileExistsError(
+            f"{output} is a reference ranking in test_systems/ and would be "
+            "overwritten; set OUT_CSV_ALL to a new path."
         )
 
 

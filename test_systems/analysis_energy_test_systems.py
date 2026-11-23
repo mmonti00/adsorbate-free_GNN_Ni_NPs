@@ -103,10 +103,6 @@ SYSTEMS = (
     SystemSpec("Ni100_4x4", "Ni(100)", "SLAB", "darkred", 0.80),
 )
 
-# No manual overrides: initial sites are reconstructed from the input structures.
-INITIAL_SITE_OVERRIDES = {}
-PREDICTED_RETENTION_OVERRIDES = {}
-
 plt.rcParams.update(
     {
         "font.family": "sans-serif",
@@ -651,12 +647,6 @@ def process_system(root: Path, spec: SystemSpec) -> tuple[pd.DataFrame, list[str
                         float(retention_probability) >= spec.retention_threshold
                     )
                     retention_prediction_source = "ranking score"
-
-            override_key = (spec.label, config)
-            if override_key in PREDICTED_RETENTION_OVERRIDES:
-                predicted_retained = PREDICTED_RETENTION_OVERRIDES[override_key]
-                retention_flag = "forced migrated"
-                retention_prediction_source = "manual override"
 
             predicted_energy = (
                 float(final_row["pred_Eads_eV"]) if final_row is not None else np.nan

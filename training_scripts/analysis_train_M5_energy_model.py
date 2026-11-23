@@ -60,7 +60,10 @@ from train_M5_energy_model import (
 initial_refs = load_initial_reference_structures()
 dataset, metadata, frames, group_labels, _ = build_pyg_dataset(EXTXYZ_FILE, initial_refs)
 
-MODEL_PATH = MODEL_OUT
+# Checkpoint to evaluate. The default is the released M5 model; to evaluate a
+# checkpoint written by train_M5_energy_model.py in this directory, set
+# MODEL_PATH = MODEL_OUT.
+MODEL_PATH = "../models_checkpoints/M5_energy_model.pt"
 N_WORST_TABLE = 50
 N_WORST_STRUCTURES = 10
 O_H_ADS_DISTANCE_THRESHOLD = 2.20

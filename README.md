@@ -175,8 +175,11 @@ python analysis_train_M6_energy_model.py
 python analysis_train_retention_model.py
 ```
 
-These analysis scripts expect the outputs produced by the matching training
-run in the current directory.
+By default (`MODEL_PATH`), each analysis script evaluates the corresponding
+released checkpoint in `models_checkpoints/`, so running it directly
+reproduces the reported validation metrics. To evaluate a model trained in this
+directory instead, set `MODEL_PATH = MODEL_OUT` (`tr.MODEL_OUT` in
+`analysis_train_M6_energy_model.py`).
 
 ## Screening adsorption-site pairs
 
@@ -188,8 +191,8 @@ ranked CSV.
 Before running it, review the **USER SETTINGS** block. At minimum, set:
 
 - `SYSTEM_NAME` and the bare-structure path;
-- the output CSV path, if the system is not already represented in
-  `test_systems/`;
+- the output CSV path (`OUT_CSV_ALL`, by default
+  `predictions/<SYSTEM_NAME>/`);
 - `MIN_SITE_DIST` and `MAX_SITE_DIST` for the system being screened;
 - `USE_PBC` and `TOP_SURFACE_ONLY` for the intended finite or periodic
   geometry;
@@ -214,7 +217,9 @@ From the repository root, run:
 python training_scripts/prediction.py
 ```
 
-The ranked CSV files contain the candidate predictions. Each new run also
+The ranked CSV files contain the candidate predictions. New rankings are
+written to `predictions/<SYSTEM_NAME>/`; the reference rankings in
+`test_systems/` used in the paper are never overwritten. Each new run also
 writes a `*_settings.json` sidecar beside its CSV, recording the checkpoint
 hashes, graph cutoffs, candidate-generation options, geometric filters, and
 retention thresholds used for that run. Predictions screen candidate pairs on
